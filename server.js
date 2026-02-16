@@ -1,207 +1,167 @@
-require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
-const NodeCache = require('node-cache');
-const ToolStationScraper = require('./scraper');
+const { scrapeSearch, scrapeProduct, scrapeWithConfig } = require('./scraper');
 
 const app = express();
-const cache = new NodeCache({ stdTTL: 3600 }); // Cache for 1 hour
-const scraper = new ToolStationScraper();
+const PORT = process.env.PORT || 3000;
+const API_KEY = process.env.API_KEY;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// API Key Authentication Middleware
+// API key authentication middleware
 const authenticateApiKey = (req, res, next) => {
-  const apiKey = req.headers['x-api-key'] || req.query.api_key;
-  const validApiKey = process.env.API_KEY || 'your-secret-api-key-change-this';
+  const apiKey = req.headers['x-api-key'];
   
-  if (!apiKey) {
-    return res.status(401).json({ 
-      error: 'API key is required',
-      message: 'Please provide an API key in the X-API-Key header or api_key query parameter'
-    });
-  }
-  
-  if (apiKey !== validApiKey) {
-    return res.status(403).json({ 
-      error: 'Invalid API key',
-      message: 'The provided API key is not valid'
-    });
+  if (!apiKey || apiKey !== API_KEY) {
+    return res.status(403).json({ error: 'Invalid or missing API key' });
   }
   
   next();
 };
 
-// Rate limiting (simple in-memory implementation)
-const rateLimitMap = new Map();
-const rateLimit = (req, res, next) => {
-  const apiKey = req.headers['x-api-key'] || req.query.api_key;
-  const now = Date.now();
-  const windowMs = 60000; // 1 minute
-  const maxRequests = 30; // 30 requests per minute
-  
-  if (!rateLimitMap.has(apiKey)) {
-    rateLimitMap.set(apiKey, []);
-  }
-  
-  const requests = rateLimitMap.get(apiKey).filter(time => now - time < windowMs);
-  
-  if (requests.length >= maxRequests) {
-    return res.status(429).json({ 
-      error: 'Rate limit exceeded',
-      message: `Maximum ${maxRequests} requests per minute allowed`
-    });
-  }
-  
-  requests.push(now);
-  rateLimitMap.set(apiKey, requests);
-  
-  next();
-};
+// In-memory cache
+const cache = new Map();
+const CACHE_DURATION = 60 * 60 * 1000; // 1 hour
 
-// Apply authentication and rate limiting to all routes
-app.use('/api', authenticateApiKey, rateLimit);
-
-// Health check endpoint (no auth required)
+// Health check endpoint
 app.get('/', (req, res) => {
   res.json({ 
-    status: 'online',
-    service: 'Tool Station Scraper API',
-    version: '1.0.0',
-    endpoints: {
-      search: 'POST /api/search',
-      product: 'GET /api/product/:productCode'
-    },
-    documentation: 'See README.md for usage instructions'
+    status: 'ok', 
+    message: 'Multi-Site Scraper API v2.0',
+    version: '2.0.0',
+    features: ['toolstation', 'multi-site', 'dynamic-config']
   });
 });
 
-// Search endpoint
-app.post('/api/search', async (req, res) => {
+// Tool Station search endpoint (backward compatible)
+app.post('/api/search', authenticateApiKey, async (req, res) => {
   try {
-    const { query, page = 1, perPage = 24 } = req.body;
+    const { query, page = 1 } = req.body;
     
     if (!query) {
-      return res.status(400).json({ 
-        error: 'Query parameter is required',
-        message: 'Please provide a search query in the request body'
-      });
+      return res.status(400).json({ error: 'Query parameter is required' });
     }
+
+    const cacheKey = `search:${query}:${page}`;
+    const cached = cache.get(cacheKey);
     
-    // Check cache
-    const cacheKey = `search:${query}:${page}:${perPage}`;
-    const cachedResult = cache.get(cacheKey);
-    
-    if (cachedResult) {
-      return res.json({ 
-        ...cachedResult,
-        cached: true,
-        timestamp: new Date().toISOString()
-      });
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      return res.json({ ...cached.data, cached: true });
     }
+
+    const result = await scrapeSearch(query, page);
     
-    // Perform search
-    const results = await scraper.search(query, page, perPage);
-    
-    // Cache results
-    cache.set(cacheKey, results);
-    
-    res.json({ 
-      ...results,
-      cached: false,
-      timestamp: new Date().toISOString()
+    cache.set(cacheKey, {
+      data: result,
+      timestamp: Date.now()
     });
-    
+
+    res.json(result);
   } catch (error) {
     console.error('Search error:', error);
-    res.status(500).json({ 
-      error: 'Search failed',
-      message: error.message
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Product detail endpoint
-app.get('/api/product/:productCode', async (req, res) => {
+// Tool Station product details endpoint (backward compatible)
+app.get('/api/product/:code', authenticateApiKey, async (req, res) => {
   try {
-    const { productCode } = req.params;
+    const { code } = req.params;
     
-    if (!productCode) {
-      return res.status(400).json({ 
-        error: 'Product code is required',
-        message: 'Please provide a product code in the URL'
-      });
+    if (!code) {
+      return res.status(400).json({ error: 'Product code is required' });
     }
+
+    const cacheKey = `product:${code}`;
+    const cached = cache.get(cacheKey);
     
-    // Check cache
-    const cacheKey = `product:${productCode}`;
-    const cachedResult = cache.get(cacheKey);
-    
-    if (cachedResult) {
-      return res.json({ 
-        ...cachedResult,
-        cached: true,
-        timestamp: new Date().toISOString()
-      });
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      return res.json({ ...cached.data, cached: true });
     }
+
+    const result = await scrapeProduct(code);
     
-    // Fetch product
-    const product = await scraper.getProduct(productCode);
-    
-    // Cache result
-    cache.set(cacheKey, product);
-    
-    res.json({ 
-      ...product,
-      cached: false,
-      timestamp: new Date().toISOString()
+    cache.set(cacheKey, {
+      data: result,
+      timestamp: Date.now()
     });
-    
+
+    res.json(result);
   } catch (error) {
-    console.error('Product fetch error:', error);
-    
-    if (error.message.includes('not found')) {
-      return res.status(404).json({ 
-        error: 'Product not found',
-        message: `Product with code ${req.params.productCode} was not found`
-      });
-    }
-    
-    res.status(500).json({ 
-      error: 'Product fetch failed',
-      message: error.message
-    });
+    console.error('Product error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Clear cache endpoint (useful for testing)
-app.post('/api/cache/clear', async (req, res) => {
-  cache.flushAll();
-  res.json({ 
-    success: true,
-    message: 'Cache cleared successfully'
+// NEW: Multi-site scraper endpoint with dynamic configuration
+app.post('/api/scrape', authenticateApiKey, async (req, res) => {
+  try {
+    const { siteConfig, query } = req.body;
+    
+    if (!siteConfig || !query) {
+      return res.status(400).json({ 
+        error: 'Both siteConfig and query are required',
+        example: {
+          siteConfig: {
+            name: 'Site Name',
+            searchUrl: 'https://example.com/search?q={query}',
+            selectors: {
+              productCard: '.product',
+              title: '.title',
+              price: '.price',
+              image: 'img',
+              link: 'a'
+            }
+          },
+          query: 'search term'
+        }
+      });
+    }
+
+    // Validate site config
+    if (!siteConfig.searchUrl || !siteConfig.selectors) {
+      return res.status(400).json({ error: 'Invalid site configuration' });
+    }
+
+    const cacheKey = `scrape:${siteConfig.name}:${query}`;
+    const cached = cache.get(cacheKey);
+    
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      return res.json({ ...cached.data, cached: true });
+    }
+
+    const result = await scrapeWithConfig(siteConfig, query);
+    
+    cache.set(cacheKey, {
+      data: result,
+      timestamp: Date.now()
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Scrape error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear cache endpoint
+app.post('/api/cache/clear', authenticateApiKey, (req, res) => {
+  cache.clear();
+  res.json({ message: 'Cache cleared successfully' });
+});
+
+// Cache stats endpoint
+app.get('/api/cache/stats', authenticateApiKey, (req, res) => {
+  res.json({
+    size: cache.size,
+    keys: Array.from(cache.keys())
   });
 });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, closing scraper...');
-  await scraper.close();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('SIGINT received, closing scraper...');
-  await scraper.close();
-  process.exit(0);
-});
-
-// Start server
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Tool Station Scraper API running on port ${PORT}`);
-  console.log(`📝 API Key: ${process.env.API_KEY || 'your-secret-api-key-change-this'}`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/`);
+  console.log(`Multi-Site Scraper API running on port ${PORT}`);
+  console.log(`API Key configured: ${API_KEY ? 'Yes' : 'No'}`);
 });
