@@ -1,0 +1,49 @@
+{
+  "toolstation": {
+    "name": "Tool Station",
+    "searchUrl": "https://www.toolstation.com/search?q={query}",
+    "selectors": {
+      "productCard": ".product-card",
+      "title": ".product-title, h3",
+      "price": ".price, [class*='price']",
+      "image": "img",
+      "link": "a",
+      "brand": ".brand, [class*='brand']"
+    }
+  },
+  "screwfix": {
+    "name": "Screwfix",
+    "searchUrl": "https://www.screwfix.com/search?search={query}",
+    "selectors": {
+      "productCard": ".product",
+      "title": ".product__name",
+      "price": ".product__price",
+      "image": ".product__image img",
+      "link": ".product__link",
+      "brand": ".product__brand"
+    }
+  },
+  "amazon": {
+    "name": "Amazon UK",
+    "searchUrl": "https://www.amazon.co.uk/s?k={query}",
+    "selectors": {
+      "productCard": "[data-component-type='s-search-result']",
+      "title": "h2 a span",
+      "price": ".a-price-whole",
+      "image": ".s-image",
+      "link": "h2 a",
+      "rating": ".a-icon-star-small"
+    }
+  },
+  "generic": {
+    "name": "Generic E-Commerce",
+    "searchUrl": "https://example.com/search?q={query}",
+    "selectors": {
+      "productCard": ".product, .product-item, [class*='product']",
+      "title": ".title, .product-title, h3, h2",
+      "price": ".price, [class*='price']",
+      "image": "img",
+      "link": "a"
+    }
+  }
+}
